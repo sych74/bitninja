@@ -10,8 +10,6 @@ The servers protected by BitNinja collect and exchange information about attacks
 
 In Virtuozzo Application Platform (VAP), this software is installed by a specially designed add-on.
 
-> **Note:** Currently, BitNinja does not fully support modern *nftables-based* systems, which is the default for Virtuozzo Application Platform AlmaLinux-based containers. Therefore, some BitNinja functionalities that rely on *iptables* (e.g., WAF and captcha modules) may not work as expected. BitNinja team is working on the issue, and full support is expected to be implemented in future releases.
-
 
 ## Add-On Installation
 
