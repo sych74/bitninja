@@ -131,43 +131,39 @@ onAfterClone:
     settings: ${settings}
   - cleanAction
     
-onAfterRedeployContainer:
-  - if ('${event.params.nodeGroup}' == '${targetNodes.nodeGroup}'):
-      cmd [${targetNodes.nodeGroup}]: |-
-        yum -y remove bitninja-repo; rm -f /etc/yum.repos.d/BitNinja.repo
-        if grep -q 'AlmaLinux' /etc/system-release; then 
-            yum install -y initscripts libxcrypt-compat && \
-            rpm -Uvh http://rpm.bitninja.io/1.0/noarch/bitninja-repo-1.0-1.noarch.rpm && \
-            sed -i 's|baseurl=.*|baseurl=http://rpm.bitninja.io/8/$basearch|g' /etc/yum.repos.d/BitNinja.repo;
-        else 
-            rpm -Uvh http://rpm.bitninja.io/1.0/noarch/bitninja-repo-1.0-1.noarch.rpm;
-        fi
-        yum -y install bitninja && service bitninja restart
-      user: root
+onAfterRedeployContainer[${targetNodes.nodeGroup}]:
+  - cmd [${targetNodes.nodeGroup}]: |-
+      yum -y remove bitninja-repo; rm -f /etc/yum.repos.d/BitNinja.repo
+      if grep -q 'AlmaLinux' /etc/system-release; then 
+          yum install -y initscripts libxcrypt-compat && \
+          rpm -Uvh http://rpm.bitninja.io/1.0/noarch/bitninja-repo-1.0-1.noarch.rpm && \
+          sed -i 's|baseurl=.*|baseurl=http://rpm.bitninja.io/8/$basearch|g' /etc/yum.repos.d/BitNinja.repo;
+      else 
+          rpm -Uvh http://rpm.bitninja.io/1.0/noarch/bitninja-repo-1.0-1.noarch.rpm;
+      fi
+      yum -y install bitninja && service bitninja restart
+    user: root
   - disableIPForwarding
   - makeLogsVisible
 
-onBeforeServiceScaleOut:
-  if ('${event.params.nodeGroup}' == '${targetNodes.nodeGroup}'):
-    cmd[${event.response.nodes.join(id,)}]: test /etc/bitninja && echo 'scale' > ${globals.action} || exit 0
-    user: root
+onBeforeServiceScaleOut[${targetNodes.nodeGroup}]:
+  cmd[${event.response.nodes.join(id,)}]: test /etc/bitninja && echo 'scale' > ${globals.action} || exit 0
+  user: root
 
-onAfterServiceScaleOut:
-  - if ('${event.params.nodeGroup}' == '${targetNodes.nodeGroup}'):
-    - if (${targetNodes.nodeGroup.length:0}): deleteLicenses
-    - if (!${targetNodes.nodeGroup.length:0}): reinstallBitNinja
-    - addFavoriteDir: ${event.params.nodeGroup}
-    - disableIPForwarding
-    - forEach(node:event.response.nodes):
-        manageWAFModule:
-          nodeid: ${@node.id}
-    - cleanAction
+onAfterServiceScaleOut[${targetNodes.nodeGroup}]:
+  - if (${targetNodes.nodeGroup.length:0}): deleteLicenses
+  - if (!${targetNodes.nodeGroup.length:0}): reinstallBitNinja
+  - addFavoriteDir: ${event.params.nodeGroup}
+  - disableIPForwarding
+  - forEach(node:event.response.nodes):
+      manageWAFModule:
+        nodeid: ${@node.id}
+  - cleanAction
 
-onAfterScaleIn:
-  if ('${event.params.nodeGroup}' == '${targetNodes.nodeGroup}'):
-    - if (${targetNodes.nodeGroup.length:0}): deleteLicenses
-    - if (!${targetNodes.nodeGroup.length:0}):
-        manageLicenses: scale
+onAfterScaleIn[${targetNodes.nodeGroup}]:
+  - if (${targetNodes.nodeGroup.length:0}): deleteLicenses
+  - if (!${targetNodes.nodeGroup.length:0}):
+      manageLicenses: scale
     
 onAfterSetExtIpCount:
   if (${event.response.result:1} == 0):
