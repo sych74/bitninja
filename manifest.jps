@@ -410,7 +410,8 @@ actions:
   restoreIPForwarding:
     cmd [group]: |-
       sysctl -w net.ipv4.ip_forward=$(grep "net.ipv4.ip_forward" ${globals.KEYS}/${globals.backupConfig} | awk '{print $3}')
-      sysctl -w net.ipv6.conf.all.forwarding=$(grep "net.ipv6.conf.all.forwarding" ${globals.KEYS}/${globals.backupConfig} | awk '{print $3}')
+      ipv6=$(grep "net.ipv6.conf.all.forwarding" ${globals.KEYS}/${globals.backupConfig} | awk '{print $3}')
+      [[ -n "${ipv6}" ]] && sysctl -w net.ipv6.conf.all.forwarding=${ipv6}
     user: root
 
   backupIPForwarding:
