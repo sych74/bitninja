@@ -211,7 +211,6 @@ actions:
           licenseKey: ${@license.licenseKey}
           id: ${@license.id}
     - enableInitScript
-    - denyPortHoneypot
     - disableBitNinjaAutoLoad
     - addFavoriteDir: ${targetNodes.nodeGroup}
     - checkExtIPs
@@ -222,6 +221,7 @@ actions:
     - if (${quota.firewall.enabled}):
         allowFirewallPorts
     - syncConfigs
+    - denyPortHoneypot
   
   reinstallBitNinja: 
     - cmd[${targetNodes.master.id}]: service bitninja restart
