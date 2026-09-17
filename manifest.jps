@@ -460,8 +460,12 @@ actions:
   denyPortHoneypot:
     cmd[group]: |-
       [[ -f "${globals.HoneypotConfig}" ]] && {
-        sed -i 's|\[ports_never_use\]|\[ports_never_use\]\nports[]=12346|g' ${globals.HoneypotConfig}
-        sed -i 's|\[ports_never_use\]|\[ports_never_use\]\nports[]=12345|g' ${globals.HoneypotConfig}
+        for port in 12345 12346; do
+          sed -i "/^\[ports_always_use\]/,/^\[/{/^ports\[\]=${port}$/d}" ${globals.HoneypotConfig}
+          if ! awk -v p="${port}" '/^\[ports_never_use\]/{found=1} found && $0 ~ "ports\\[\\]=" p {exit 0} /^\[/ && !/^\[ports_never_use\]/{found=0} END{exit 1}' ${globals.HoneypotConfig}; then
+            sed -i "/^\[ports_never_use\]/a ports[]=${port}" ${globals.HoneypotConfig}
+          fi
+        done
         service bitninja restart
       } || exit 0;
     user: root
