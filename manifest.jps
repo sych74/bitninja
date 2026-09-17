@@ -415,7 +415,7 @@ actions:
     
   allowFirewallPorts:
     script: |
-      var ports = [60412, 60413, 60201, 60210, "60211-60250", 60300, 60301, 60414], rules = [], resp;
+      var ports = [60412, 60413, 60201, 60210, "60211-60250", 60414, 60415], rules = [], resp;
      
       for (var i = 0, n = ports.length; i < n; i++) {
         rules.push({
