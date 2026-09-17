@@ -327,6 +327,7 @@ actions:
   enableWAF3:
     cmd [${this.nodeid:group}]: |-
       bitninjacli --module=WAF3 --enabled 2>/dev/null || true
+      bitninjacli --module=WAF3 --regenerate 2>/dev/null || true
       service bitninja restart
     user: root
 
