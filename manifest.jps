@@ -165,14 +165,18 @@ onAfterScaleIn[${targetNodes.nodeGroup}]:
       manageLicenses: scale
     
 onAfterSetExtIpCount:
-  if (${event.response.result:1} == 0):
-    enableWAF3:
-      nodeid: ${event.params.nodeid}
+  - if (${event.response.result:1} == 0):
+      env.control.GetNodeInfo[${event.params.nodeid}]
+  - if (${event.response.result:1} == 0 && '${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
+      enableWAF3:
+        nodeid: ${response.node.id}
 
 onAfterAttachExtIp:
-  if (${event.response.result:1} == 0):
-    enableWAF3:
-      nodeid: ${event.params.nodeid}
+  - if (${event.response.result:1} == 0):
+      env.control.GetNodeInfo[${event.params.nodeid}]
+  - if (${event.response.result:1} == 0 && '${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
+      enableWAF3:
+        nodeid: ${response.node.id}
 
 onBeforeDetachExtIp:
   - env.control.GetNodeInfo[${event.params.nodeid}]
