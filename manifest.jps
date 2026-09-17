@@ -378,15 +378,25 @@ actions:
       user: root
   
   disableIPForwarding:
-    cmd [group]: sysctl -w net.ipv4.ip_forward=0
+    cmd [group]: |-
+      sysctl -w net.ipv4.ip_forward=0
+      sysctl -w net.ipv6.conf.all.forwarding=0
     user: root
       
   restoreIPForwarding:
-    cmd [group]: sysctl -w net.ipv4.ip_forward=$(grep "ip_forward" ${globals.KEYS}/${globals.backupConfig} | awk '{print $3}')
+    cmd [group]: |-
+      sysctl -w net.ipv4.ip_forward=$(grep "net.ipv4.ip_forward" ${globals.KEYS}/${globals.backupConfig} | awk '{print $3}')
+      ipv6=$(grep "net.ipv6.conf.all.forwarding" ${globals.KEYS}/${globals.backupConfig} | awk '{print $3}')
+      [[ -n "${ipv6}" ]] && sysctl -w net.ipv6.conf.all.forwarding=${ipv6}
     user: root
 
   backupIPForwarding:
-    cmd [group]: mkdir -p ${globals.KEYS}; echo "net.ipv4.ip_forward = "$(cat /proc/sys/net/ipv4/ip_forward) > ${globals.KEYS}/${globals.backupConfig}
+    cmd [group]: |-
+      mkdir -p ${globals.KEYS}
+      {
+        echo "net.ipv4.ip_forward = $(cat /proc/sys/net/ipv4/ip_forward)"
+        echo "net.ipv6.conf.all.forwarding = $(cat /proc/sys/net/ipv6/conf/all/forwarding)"
+      } > ${globals.KEYS}/${globals.backupConfig}
     user: root
     
   allowFirewallPorts:
