@@ -106,7 +106,6 @@ targetNodes:
 globals:
   action: /etc/bitninja/jelastic_action
   HoneypotConfig: /etc/bitninja/PortHoneypot/config.ini
-  WAFConfig: /etc/bitninja/WAFManager/config.ini
   EXTEND_PERM: /etc/jelastic/extendperm.conf
   KEYS: /var/lib/jelastic/keys/
   backupConfig: bitninja.sysctl.conf.backup
@@ -156,7 +155,7 @@ onAfterServiceScaleOut[${targetNodes.nodeGroup}]:
   - addFavoriteDir: ${event.params.nodeGroup}
   - disableIPForwarding
   - forEach(node:event.response.nodes):
-      manageWAFModule:
+      enableWAF3:
         nodeid: ${@node.id}
   - cleanAction
 
@@ -167,18 +166,18 @@ onAfterScaleIn[${targetNodes.nodeGroup}]:
     
 onAfterSetExtIpCount:
   if (${event.response.result:1} == 0):
-    manageWAFModule:
+    enableWAF3:
       nodeid: ${event.params.nodeid}
 
 onAfterAttachExtIp:
   if (${event.response.result:1} == 0):
-    manageWAFModule:
+    enableWAF3:
       nodeid: ${event.params.nodeid}
 
 onBeforeDetachExtIp:
   - env.control.GetNodeInfo[${event.params.nodeid}]
   - if ('${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
-      manageWAFModule:
+      enableWAF3:
         nodeid: ${response.node.id}
 
 onBeforeDelete: uninstallBitninja
@@ -210,18 +209,18 @@ actions:
         installAgent:
           licenseKey: ${@license.licenseKey}
           id: ${@license.id}
+    - syncConfigs
     - enableInitScript
     - denyPortHoneypot
     - disableBitNinjaAutoLoad
     - addFavoriteDir: ${targetNodes.nodeGroup}
-    - checkExtIPs
+    - enableWAF3: ${targetNodes.nodeGroup}
     - makeLogsVisible
     - addRedeployConfDir
     - backupIPForwarding
     - disableIPForwarding
     - if (${quota.firewall.enabled}):
         allowFirewallPorts
-    - syncConfigs
   
   reinstallBitNinja: 
     - cmd[${targetNodes.master.id}]: service bitninja restart
@@ -321,50 +320,12 @@ actions:
       nodeGroup: ${targetNodes.nodeGroup}
       path: /etc/bitninja
 
-  checkExtIPs:
-    - if ('${this.nodeid:}'):
-      - if (${targetNodes.extipsv6.length:false}):
-          configureWAF:
-            type: ipv6
-            nodeid: ${this.nodeid:}
-      - else:
-          configureWAF:
-            type: ipv4
-            nodeid: ${this.nodeid:}
-    - else:
-        forEach(node:env.nodes):
-          if ('${@node.nodeGroup}' == '${targetNodes.nodeGroup}'):
-            - if (${@node.extipsv6.length:false}):
-                configureWAF:
-                  type: ipv6
-                  nodeid: ${@node.id:}
-            - else:
-                configureWAF:
-                  type: ipv4
-                  nodeid: ${@node.id:}
-
-  manageWAFModule:
-    - env.control.GetNodeInfo[${this.nodeid}]:
-    - if ('${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
-          checkExtIPs:
-            nodeid: "${response.node.id}"
-
-  configureWAF:
-    cmd [${this.nodeid}]: |-
-      grep -qR '^interface'  ${globals.WAFConfig} && exit 0
-      sed -i 's|^interface.*||g' ${globals.WAFConfig}
-      device=$(ip -o addr show scope global | grep $([[ "${this.type:ipv4}" == "ipv4" ]] && echo "inet" || echo "inet6") | awk '{print $2}' | head -1)
-      sed -i "s|.*redirection_mode = 'transparent'|redirection_mode = 'transparent'\ninterface[]='${device}'|g" ${globals.WAFConfig}
+  enableWAF3:
+    cmd [${this.nodeid:group}]: |-
+      bitninjacli --module=WAF3 --enabled 2>/dev/null || true
       service bitninja restart
     user: root
 
-  disableWAF:
-    cmd [${this.nodeid}]: |-
-      sed -i "s|^redirection_mode.*|;redirection_mode = 'transparent'|g" ${globals.WAFConfig}
-      sed -i "s|^interface.*||g" ${globals.WAFConfig}
-      service bitninja restart
-    user: root
-      
   makeLogsVisible:
     - script: |
         var resp, items, item, path;
