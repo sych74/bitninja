@@ -386,9 +386,16 @@ actions:
     - cmd [${targetNodes.nodeGroup}]: |-
         pathLog="${response.path:}";
         [[ -z ${pathLog} ]] && pathLog="/var/log"
-        
-        [[ -d "/var/log/bitninja" && ! -d "${pathLog}/bitninja" ]] && ln -s /var/log/bitninja ${pathLog}
-        [[ -d "/var/log/bitninja-ssl-termination" && ! -d "${pathLog}/bitninja-ssl-termination" ]] && ln -s /var/log/bitninja-ssl-termination ${pathLog}
+
+        link_log() {
+          local src="$1" name="$2"
+          [[ -d "${src}" && ! -e "${pathLog}/${name}" ]] && ln -s "${src}" "${pathLog}/${name}"
+        }
+        link_log "/var/log/bitninja" "bitninja"
+        link_log "/var/log/bitninja-waf3" "bitninja-waf3"
+        chmod 755 /var/log/bitninja /var/log/bitninja-waf3 2>/dev/null || true
+        find /var/log/bitninja /var/log/bitninja-waf3 -type f -exec chmod 644 {} + 2>/dev/null || true
+        find /var/log/bitninja /var/log/bitninja-waf3 -type d -exec chmod 755 {} + 2>/dev/null || true
         exit 0;
       user: root
 
