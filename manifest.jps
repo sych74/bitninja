@@ -1,6 +1,6 @@
 type: update
 id: bitninja
-version: 6.0.1
+version: 6.1.0
 name: BitNinja Service
 logo: images/logo.png
 homepage: https://bitninja.io/
@@ -111,12 +111,18 @@ globals:
   backupConfig: bitninja.sysctl.conf.backup
   bitninja_label: BitNinja Service
   minCloudlets: 4
+  mqSocket: /var/lib/bitninja/mq.sock
+  mqProcess: /opt/bitninja-mq/bin/bitninja-mq-server
+  mainLog: /var/log/bitninja/main.log
+  cliLog: /var/log/bitninja/mod.cli.log
+  cliHelper: /usr/local/bin/bn-cli
 
 onAfterStart: 
-    updateLicenses: renew
+  - updateLicenses: renew
+  - reloadPlatformConfig
 
 onBeforeStop: 
-    deleteLicenses: terminate
+  - deleteLicenses: terminate
 
 onBeforeClone:
   cmd [group]: test /etc/bitninja  && echo 'clone' > ${globals.action} || exit 0
@@ -141,11 +147,12 @@ onAfterRedeployContainer[${targetNodes.nodeGroup}]:
         else 
             rpm -Uvh http://rpm.bitninja.io/1.0/noarch/bitninja-repo-1.0-1.noarch.rpm;
         fi
-        yum -y install bitninja && service bitninja restart
+        yum -y install bitninja
       user: root
-    - addFavoriteDir: ${event.params.nodeGroup}
+    - enableInitScript
+    - disableBitNinjaAutoLoad
+    - applyPlatformConfig
   - disableIPForwarding
-  - makeLogsVisible
 
 onBeforeServiceScaleOut[${targetNodes.nodeGroup}]:
   cmd[${event.response.nodes.join(id,)}]: test /etc/bitninja && echo 'scale' > ${globals.action} || exit 0
@@ -154,11 +161,8 @@ onBeforeServiceScaleOut[${targetNodes.nodeGroup}]:
 onAfterServiceScaleOut[${targetNodes.nodeGroup}]:
   - if (${targetNodes.nodeGroup.length:0}): deleteLicenses
   - if (!${targetNodes.nodeGroup.length:0}): reinstallBitNinja
-  - addFavoriteDir: ${event.params.nodeGroup}
   - disableIPForwarding
-  - forEach(node:event.response.nodes):
-      enableWAF3:
-        nodeid: ${@node.id}
+  - applyPlatformConfig
   - cleanAction
 
 onAfterScaleIn[${targetNodes.nodeGroup}]:
@@ -170,20 +174,20 @@ onAfterSetExtIpCount:
   - if (${event.response.result:1} == 0):
       env.control.GetNodeInfo[${event.params.nodeid}]
   - if (${event.response.result:1} == 0 && '${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
-      enableWAF3:
+      refreshNodeConfig:
         nodeid: ${response.node.id}
 
 onAfterAttachExtIp:
   - if (${event.response.result:1} == 0):
       env.control.GetNodeInfo[${event.params.nodeid}]
   - if (${event.response.result:1} == 0 && '${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
-      enableWAF3:
+      refreshNodeConfig:
         nodeid: ${response.node.id}
 
 onBeforeDetachExtIp:
   - env.control.GetNodeInfo[${event.params.nodeid}]
   - if ('${response.node.nodeGroup}' == '${targetNodes.nodeGroup}'):
-      enableWAF3:
+      refreshNodeConfig:
         nodeid: ${response.node.id}
 
 onBeforeDelete: uninstallBitninja
@@ -215,18 +219,14 @@ actions:
         installAgent:
           licenseKey: ${@license.licenseKey}
           id: ${@license.id}
-    - syncConfigs
     - enableInitScript
     - disableBitNinjaAutoLoad
-    - addFavoriteDir: ${targetNodes.nodeGroup}
-    - enableWAF3: ${targetNodes.nodeGroup}
-    - makeLogsVisible
     - addRedeployConfDir
     - backupIPForwarding
     - disableIPForwarding
     - if (${quota.firewall.enabled}):
         allowFirewallPorts
-    - denyPortHoneypot
+    - applyPlatformConfig
   
   reinstallBitNinja: 
     - cmd[${targetNodes.master.id}]: service bitninja restart
@@ -245,6 +245,7 @@ actions:
     - manageLicenses: uninstall
     - forEach(license:response.licenses):
         uninstallAgent: ${@license.id}
+    - removeLogLinks
     - removeFavoriteDir
     - removeRedeployConfDir
     - restoreIPForwarding
@@ -279,11 +280,22 @@ actions:
     user: root
   
   restartBitNinja:
-    cmd [group]: service bitninja restart
-    user: root
+    - cmd [group]: service bitninja restart
+      user: root
+    - reloadPlatformConfig
 
   removeLogs:
     cmd [${this}]: rm -Rf /var/log/bitninja*;
+    user: root
+
+  removeLogLinks:
+    cmd [group]: |-
+      for link in $(find /var/log -maxdepth 2 -type l -name 'bitninja*' 2>/dev/null); do
+        case "$(readlink $link)" in
+          /var/log/bitninja*) rm -f $link;;
+        esac
+      done
+      exit 0
     user: root
 
   installAgent:
@@ -293,8 +305,9 @@ actions:
     user: root
 
   updateAgent:
-    cmd [group]: yum -y install bitninja; service bitninja restart
-    user: root
+    - cmd [group]: yum -y install bitninja
+      user: root
+    - reloadPlatformConfig
 
   enableInitScript:
     cmd [group]: |-
@@ -304,34 +317,176 @@ actions:
     user: root
 
   disableBitNinjaAutoLoad:
-    cmd [group]: $(ps uax | grep -v grep | grep -q bitninja) && chkconfig --del bitninja || echo "BitNinija service is absent"
+    cmd [group]: |-
+      if systemctl is-enabled bitninja >/dev/null 2>&1; then
+        systemctl disable bitninja
+      elif chkconfig --list bitninja >/dev/null 2>&1; then
+        chkconfig --del bitninja
+      else
+        echo "BitNinja service autoload is already disabled or the service is absent"
+      fi
+    user: root
+
+  installCliHelper:
+    cmd [${this.nodeid:group}]: |-
+      cat > ${globals.cliHelper} <<'HELPER'
+      #!/bin/bash
+      # Wrapper around bitninjacli: the CLI exits 0 even when the message queue is
+      # unavailable, so failures are detected from the lines it appends to the log.
+      before=$(wc -l < ${globals.cliLog} 2>/dev/null || echo 0)
+      out=$(bitninjacli "$@" 2>&1); rc=$?
+      [ -n "$out" ] && echo "$out" | sed -e 's/\x1b\[[0-9;]*m//g'
+      [ $rc -eq 0 ] || exit $rc
+      tail -n +$((before + 1)) ${globals.cliLog} 2>/dev/null | grep -qiE 'redis.*not available|could not send command' && exit 1
+      exit 0
+      HELPER
+      chmod +x ${globals.cliHelper}
+    user: root
+
+  applyPlatformConfig:
+    - installCliHelper
+    - waitBitNinjaReady
+    - waitCloudConfigSync
+    - addFavoriteDir: ${targetNodes.nodeGroup}
+    - denyPortHoneypot
+    - enableWAF3
+    - persistCloudConfig
+    - reloadModules
+    - fixBitNinjaPerms: ${targetNodes.nodeGroup}
+    - makeLogsVisible
+
+  reloadPlatformConfig:
+    - installCliHelper
+    - waitBitNinjaReady
+    - enableWAF3
+    - reloadModules
+
+  refreshNodeConfig:
+    - installCliHelper:
+        nodeid: ${this.nodeid}
+    - waitBitNinjaReady:
+        nodeid: ${this.nodeid}
+    - enableWAF3:
+        nodeid: ${this.nodeid}
+
+  persistCloudConfig:
+    cmd [${this.nodeid:group}]: |-
+      bn_cli() { ${globals.cliHelper} "$@"; }
+      n=0
+      until bn_cli --syncconfigs; do
+        n=$((n+1))
+        if [ "$n" -ge 5 ]; then echo "WARN: bitninjacli --syncconfigs failed after $n attempts, local config is not pushed to BitNinja Central" >&2; break; fi
+        sleep 5
+      done
+    user: root
+
+  reloadModules:
+    cmd [${this.nodeid:group}]: |-
+      bn_cli() { ${globals.cliHelper} "$@"; }
+      for module in System PortHoneypot WAF3; do
+        bn_cli --module=$module --reload || echo "WARN: failed to reload BitNinja module $module" >&2
+      done
     user: root
 
   addFavoriteDir:
     - cmd [${this}]: |-
-        sed -i -E 's/^[;[:space:]]*retain_rights[[:space:]]*=[[:space:]]*0/retain_rights=1/' /etc/bitninja/System/config.ini
-        str=$(cat /etc/jelastic/extendperm.conf | awk '/./{line=$0} END{print line}')
-        grep -q "/etc/bitninja" ${globals.EXTEND_PERM} || sed -i "s|${str}|${str};/etc/bitninja|g" ${globals.EXTEND_PERM}
-        service bitninja restart
-        find /etc/bitninja -type d -exec chmod 755 {} +
-        find /etc/bitninja -type f -exec chmod 644 {} +
-        jem filemanager extendperm
+        for cfg in /etc/bitninja/*/config.ini; do
+          grep -qE '^[;[:space:]]*retain_rights' "$cfg" || continue
+          sed -i -E 's/^[;[:space:]]*retain_rights[[:space:]]*=[[:space:]]*0/retain_rights=1/' "$cfg"
+        done
+        grep -l 'retain_rights=1' /etc/bitninja/*/config.ini
       user: root
     - env.file.AddFavorite[group]:
         path: /etc/bitninja
         keyword: BitNinja
         isDir: true
 
+  fixBitNinjaPerms:
+    cmd [${this}]: |-
+      str=$(awk '/./{line=$0} END{print line}' ${globals.EXTEND_PERM})
+      grep -q "/etc/bitninja" ${globals.EXTEND_PERM} || sed -i "s|${str}|${str};/etc/bitninja|g" ${globals.EXTEND_PERM}
+      find /etc/bitninja -type d -exec chmod 755 {} +
+      find /etc/bitninja -type f -exec chmod 644 {} +
+      jem filemanager extendperm
+    user: root
+
   removeFavoriteDir:
     env.file.RemoveFavorite:
       nodeGroup: ${targetNodes.nodeGroup}
       path: /etc/bitninja
 
+  waitBitNinjaReady:
+    cmd [${this.nodeid:group}]: |-
+      bn_cli() { ${globals.cliHelper} "$@"; }
+      waited=0
+      while [ $waited -lt 180 ]; do
+        if [[ -S ${globals.mqSocket} ]] && pgrep -f ${globals.mqProcess} >/dev/null; then
+          if bn_cli --module=System --reload >/dev/null 2>&1; then
+            echo "BitNinja command dispatch is ready after ${waited}s"
+            exit 0
+          fi
+        fi
+        [ $waited -lt 30 ] && step=2 || step=5
+        sleep $step
+        waited=$((waited + step))
+      done
+      echo "WARN: BitNinja cannot dispatch CLI commands after ${waited}s, the configuration steps below may be lost" >&2
+      exit 0
+    user: root
+
+  waitCloudConfigSync:
+    cmd [${this.nodeid:group}]: |-
+      if [[ ! -f ${globals.mainLog} ]]; then
+        echo "WARN: ${globals.mainLog} is absent, skipping cloud configuration wait" >&2
+        exit 0
+      fi
+      waited=0
+      while [ $waited -lt 180 ]; do
+        if tac ${globals.mainLog} | awk '/Starting module initialization/{exit} index($0,"Cloud configuration downloaded."){found=1; exit} END{exit !found}'; then
+          echo "Initial cloud configuration pull has finished after ${waited}s"
+          exit 0
+        fi
+        [ $waited -lt 30 ] && step=2 || step=5
+        sleep $step
+        waited=$((waited + step))
+      done
+      echo "WARN: cloud configuration pull was not observed in ${globals.mainLog} after ${waited}s, local config changes may be overwritten by a later pull" >&2
+      exit 0
+    user: root
+
   enableWAF3:
     cmd [${this.nodeid:group}]: |-
-      bitninjacli --module=WAF3 --enabled 2>/dev/null || true
-      bitninjacli --module=WAF3 --regenerate 2>/dev/null || true
-      service bitninja restart
+      bn_cli() { ${globals.cliHelper} "$@"; }
+      waf3_enabled() {
+        bitninjacli --module=WAF3 --status 2>&1 | grep -qE '"enabled"[[:space:]]*:[[:space:]]*true'
+      }
+      n=0
+      until waf3_enabled; do
+        n=$((n + 1))
+        if [ $n -gt 5 ]; then
+          echo "WARN: WAF3 is still reported as disabled after $((n - 1)) enable attempts" >&2
+          break
+        fi
+        bn_cli --module=WAF3 --enabled || echo "WARN: WAF3 enable attempt $n was not dispatched" >&2
+        sleep 5
+      done
+      if waf3_enabled; then
+        bn_cli --module=WAF3 --regenerate || echo "WARN: WAF3 config regeneration was not dispatched" >&2
+      fi
+      if bitninjacli --licenseinfo 2>&1 | grep -q 'no_payment'; then
+        echo "WARN: BitNinja license is no_payment, WAF Pro traffic interception will not start on this server" >&2
+      fi
+      echo "WAF3 module status:"
+      bitninjacli --module=WAF3 --status 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g'
+      if waf3_enabled; then
+        if ss -tln 2>/dev/null | grep -qE ':(60414|60415)([[:space:]]|$)' &&
+           nft list chain ip bitninja N-BN_WAF_REDIR 2>/dev/null | grep -qE 'dnat|redirect'; then
+          echo "WAF Pro is inspecting traffic on 60414/60415"
+        else
+          echo "WARN: WAF3 reports enabled, but no proxy listens on 60414/60415 and N-BN_WAF_REDIR is empty, so no request is inspected (BitNinja WAF Pro does not generate its proxy config, JE-76574 finding 1)" >&2
+        fi
+      fi
+      exit 0
     user: root
 
   makeLogsVisible:
@@ -354,7 +509,13 @@ actions:
             }
     - cmd [${targetNodes.nodeGroup}]: |-
         pathLog="${response.path:}";
+        if [[ -z ${pathLog} || ! -d ${pathLog} ]]; then
+          for dir in /var/log/httpd /var/log/nginx /var/log/apache2 /var/log/litespeed; do
+            [[ -d $dir ]] && pathLog="$dir" && break
+          done
+        fi
         [[ -z ${pathLog} ]] && pathLog="/var/log"
+        echo "Exposing BitNinja logs in ${pathLog}"
 
         link_log() {
           local src="$1" name="$2"
@@ -362,19 +523,17 @@ actions:
         }
         link_log "/var/log/bitninja" "bitninja"
         link_log "/var/log/bitninja-waf3" "bitninja-waf3"
-        chmod 755 /var/log/bitninja /var/log/bitninja-waf3 2>/dev/null || true
-        find /var/log/bitninja /var/log/bitninja-waf3 -type f -exec chmod 644 {} + 2>/dev/null || true
-        find /var/log/bitninja /var/log/bitninja-waf3 -type d -exec chmod 755 {} + 2>/dev/null || true
+        find /var/log/bitninja /var/log/bitninja-waf3 \( -type d -exec chmod 755 {} + \) -o \( -type f -exec chmod 644 {} + \) 2>/dev/null
         exit 0;
       user: root
 
   addRedeployConfDir:
-    cmd [group]: CONF="/etc/jelastic/redeploy.conf"; grep -q 'bitninja' ${CONF} || echo "/etc/bitninja" >> ${CONF}
+    cmd [group]: CONF="/etc/jelastic/redeploy.conf"; grep -q 'bitninja' $CONF || echo "/etc/bitninja" >> $CONF
     user: root
     
   removeRedeployConfDir:
     if (${env.status} == 1):
-      cmd [group]: sed -i 's|.*bitninja.*||g' /etc/jelastic/redeploy.conf
+      cmd [group]: sed -i '/bitninja/d' /etc/jelastic/redeploy.conf
       user: root
   
   disableIPForwarding:
@@ -400,30 +559,31 @@ actions:
     user: root
     
   allowFirewallPorts:
-    script: |
-      var ports = [60412, 60413, 60201, 60210, "60211-60250", 60414, 60415], rules = [], resp;
-     
-      for (var i = 0, n = ports.length; i < n; i++) {
-        rules.push({
-          direction: "INPUT",
-          nodeGroup: "cp",
-          name: "${globals.bitninja_label}",
-          protocol: "TCP",
-          ports: ports[i],
-          src: "ALL",
-          priority: 1000,
-          action: "ALLOW",
-          isEnabled: true
-        });
-      }
-  
-      return api.environment.security.AddRules("${env.name}", session, toJSON(rules), "${targetNodes.nodeGroup}");
+    - denyFirewallPorts
+    - script: |
+        var ports = [60412, 60413, 60201, 60210, "60211-60250", 60414, 60415], rules = [], resp;
+
+        for (var i = 0, n = ports.length; i < n; i++) {
+          rules.push({
+            direction: "INPUT",
+            nodeGroup: "${targetNodes.nodeGroup}",
+            name: "${globals.bitninja_label}",
+            protocol: "TCP",
+            ports: ports[i],
+            src: "ALL",
+            priority: 1000,
+            action: "ALLOW",
+            isEnabled: true
+          });
+        }
+
+        return api.environment.security.AddRules("${env.name}", session, toJSON(rules), "${targetNodes.nodeGroup}");
 
   denyFirewallPorts:
     script: |
       var resp, rules, rm_rules = [];
       
-      resp = api.env.security.GetRules("${env.name}", session, "${targetNodes.nodeGroup}");
+      resp = api.environment.security.GetRules("${env.name}", session, "${targetNodes.nodeGroup}");
       if (resp.result != 0) return resp;
       
       rules = resp.rules;
@@ -435,7 +595,7 @@ actions:
       }
       
       if (rm_rules.length) {
-        resp = api.env.security.RemoveRules("${env.name}", session, rm_rules);
+        resp = api.environment.security.RemoveRules("${env.name}", session, rm_rules);
         if (resp.result != 0) return resp;
       }
       
@@ -452,14 +612,9 @@ actions:
             sed -i "/^\[ports_never_use\]/a ports[]=${port}" ${globals.HoneypotConfig}
           fi
         done
-        service bitninja restart
       } || exit 0;
     user: root
   
   cleanAction:
     cmd [group]: test /etc/bitninja  && echo '' > ${globals.action} || exit 0
-    user: root
-
-  syncConfigs:
-    cmd [group]: bitninjacli --syncconfigs
     user: root
