@@ -280,6 +280,7 @@ actions:
   restartBitNinja:
     - cmd [group]: service bitninja restart
       user: root
+    - waitForBitNinjaAgent
     - configureWAF3
 
   removeLogs:
@@ -367,17 +368,34 @@ actions:
           checkExtIPs:
             nodeid: "${response.node.id}"
 
-  configureWAF3:
+  waitForBitNinjaAgent:
     cmd [${this.nodeid:group}]: |-
-      [[ -d /etc/bitninja/WAF3 ]] || exit 0
-      bitninjacli --module=WAF3 --enable 2>/dev/null || true
-      bitninjacli --module=WAF3 --regenerate
-      bitninjacli --module=WAF3 --reload
-      if [[ -f /etc/systemd/system/bitninja-waf3.service ]]; then
-        systemctl is-active --quiet bitninja-waf3 || systemctl start bitninja-waf3
-        systemctl enable bitninja-waf3 2>/dev/null || true
-      fi
+      for i in $(seq 1 60); do
+        systemctl is-active --quiet bitninja || { sleep 2; continue; }
+        bitninjacli --module=IpFilter --status 2>&1 | grep -q '"enabled"' && exit 0
+        sleep 2
+      done
+      echo "WARN: BitNinja agent not ready for CLI after 120s" >&2
     user: root
+
+  configureWAF3:
+    - waitForBitNinjaAgent:
+        nodeid: ${this.nodeid:}
+    - cmd [${this.nodeid:group}]: |-
+        [[ -d /etc/bitninja/WAF3 ]] || exit 0
+        waf_enable_ok=0
+        for i in $(seq 1 15); do
+          bitninjacli --module=WAF3 --enable 2>&1 && { waf_enable_ok=1; break; }
+          sleep 2
+        done
+        [ "$waf_enable_ok" = 1 ] || echo "WARN: WAF3 --enable failed after retries" >&2
+        bitninjacli --module=WAF3 --regenerate
+        bitninjacli --module=WAF3 --reload
+        if [[ -f /etc/systemd/system/bitninja-waf3.service ]]; then
+          systemctl is-active --quiet bitninja-waf3 || systemctl start bitninja-waf3
+          systemctl enable bitninja-waf3 2>/dev/null || true
+        fi
+      user: root
 
   configureWAF:
     cmd [${this.nodeid}]: |-
@@ -491,11 +509,13 @@ actions:
       
   denyPortHoneypot:
     cmd[group]: |-
-      [[ -f "${globals.HoneypotConfig}" ]] && {
-        sed -i 's|\[ports_never_use\]|\[ports_never_use\]\nports[]=12346|g' ${globals.HoneypotConfig}
-        sed -i 's|\[ports_never_use\]|\[ports_never_use\]\nports[]=12345|g' ${globals.HoneypotConfig}
+      [[ -f "${globals.HoneypotConfig}" ]] || exit 0
+      grep -q 'ports\[\]=12345' "${globals.HoneypotConfig}" && grep -q 'ports\[\]=12346' "${globals.HoneypotConfig}" && exit 0
+      sed -i 's|\[ports_never_use\]|\[ports_never_use\]\nports[]=12346|g' ${globals.HoneypotConfig}
+      sed -i 's|\[ports_never_use\]|\[ports_never_use\]\nports[]=12345|g' ${globals.HoneypotConfig}
+      bitninjacli --module=PortHoneypot --reload 2>/dev/null || \
+        bitninjacli --module=ConfigParser --reload 2>/dev/null || \
         service bitninja restart
-      } || exit 0;
     user: root
   
   cleanAction:
@@ -503,6 +523,7 @@ actions:
     user: root
 
   syncConfigs:
+    - waitForBitNinjaAgent
     - cmd [group]: |-
         bitninjacli --syncconfigs
         bitninjacli --module=System --reload || echo "WARN: System module reload failed" >&2
