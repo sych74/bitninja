@@ -1,6 +1,6 @@
 type: update
 id: bitninja
-version: 6.0.2
+version: 6.0.3
 name: BitNinja Service
 logo: images/logo.png
 homepage: https://bitninja.io/
@@ -145,6 +145,8 @@ onAfterRedeployContainer[${targetNodes.nodeGroup}]:
     user: root
   - disableIPForwarding
   - makeLogsVisible
+  - syncConfigs
+  - checkExtIPs
 
 onBeforeServiceScaleOut[${targetNodes.nodeGroup}]:
   cmd[${event.response.nodes.join(id,)}]: test /etc/bitninja && echo 'scale' > ${globals.action} || exit 0
@@ -215,7 +217,6 @@ actions:
     - denyPortHoneypot
     - disableBitNinjaAutoLoad
     - addFavoriteDir: ${targetNodes.nodeGroup}
-    - checkExtIPs
     - makeLogsVisible
     - addRedeployConfDir
     - backupIPForwarding
@@ -223,6 +224,7 @@ actions:
     - if (${quota.firewall.enabled}):
         allowFirewallPorts
     - syncConfigs
+    - checkExtIPs
   
   reinstallBitNinja: 
     - cmd[${targetNodes.master.id}]: service bitninja restart
@@ -236,6 +238,7 @@ actions:
             id: ${@license.id}
         - enableInitScript
         - disableBitNinjaAutoLoad
+    - syncConfigs
 
   uninstallBitninja:
     - manageLicenses: uninstall
@@ -275,8 +278,9 @@ actions:
     user: root
   
   restartBitNinja:
-    cmd [group]: service bitninja restart
-    user: root
+    - cmd [group]: service bitninja restart
+      user: root
+    - configureWAF3
 
   removeLogs:
     cmd [${this}]: rm -Rf /var/log/bitninja*;
@@ -289,8 +293,9 @@ actions:
     user: root
 
   updateAgent:
-    cmd [group]: yum -y install bitninja; service bitninja restart
-    user: root
+    - cmd [group]: yum -y install bitninja; service bitninja restart
+      user: root
+    - syncConfigs
 
   enableInitScript:
     cmd [group]: |-
@@ -332,9 +337,13 @@ actions:
           configureWAF:
             type: ipv6
             nodeid: ${this.nodeid:}
+          configureWAF3:
+            nodeid: ${this.nodeid:}
       - else:
           configureWAF:
             type: ipv4
+            nodeid: ${this.nodeid:}
+          configureWAF3:
             nodeid: ${this.nodeid:}
     - else:
         forEach(node:env.nodes):
@@ -343,9 +352,13 @@ actions:
                 configureWAF:
                   type: ipv6
                   nodeid: ${@node.id:}
+                configureWAF3:
+                  nodeid: ${@node.id:}
             - else:
                 configureWAF:
                   type: ipv4
+                  nodeid: ${@node.id:}
+                configureWAF3:
                   nodeid: ${@node.id:}
 
   manageWAFModule:
@@ -354,8 +367,21 @@ actions:
           checkExtIPs:
             nodeid: "${response.node.id}"
 
+  configureWAF3:
+    cmd [${this.nodeid:group}]: |-
+      [[ -d /etc/bitninja/WAF3 ]] || exit 0
+      bitninjacli --module=WAF3 --enable 2>/dev/null || true
+      bitninjacli --module=WAF3 --regenerate
+      bitninjacli --module=WAF3 --reload
+      if [[ -f /etc/systemd/system/bitninja-waf3.service ]]; then
+        systemctl is-active --quiet bitninja-waf3 || systemctl start bitninja-waf3
+        systemctl enable bitninja-waf3 2>/dev/null || true
+      fi
+    user: root
+
   configureWAF:
     cmd [${this.nodeid}]: |-
+      [[ -d /etc/bitninja/WAF3 ]] && exit 0
       grep -qR '^interface'  ${globals.WAFConfig} && exit 0
       sed -i 's|^interface.*||g' ${globals.WAFConfig}
       device=$(ip -o addr show scope global | grep $([[ "${this.type:ipv4}" == "ipv4" ]] && echo "inet" || echo "inet6") | awk '{print $2}' | head -1)
@@ -394,6 +420,7 @@ actions:
         
         [[ -d "/var/log/bitninja" && ! -d "${pathLog}/bitninja" ]] && ln -s /var/log/bitninja ${pathLog}
         [[ -d "/var/log/bitninja-ssl-termination" && ! -d "${pathLog}/bitninja-ssl-termination" ]] && ln -s /var/log/bitninja-ssl-termination ${pathLog}
+        [[ -d "/var/log/bitninja-waf3" && ! -d "${pathLog}/bitninja-waf3" ]] && ln -s /var/log/bitninja-waf3 ${pathLog}
         exit 0;
       user: root
 
@@ -420,7 +447,7 @@ actions:
     
   allowFirewallPorts:
     script: |
-      var ports = [60412, 60413, 60201, 60210, "60211-60250", 60300, 60301, 60414], rules = [], resp;
+      var ports = [60412, 60413, 60201, 60210, "60211-60250", 60300, 60301, 60414, 60415], rules = [], resp;
      
       for (var i = 0, n = ports.length; i < n; i++) {
         rules.push({
@@ -476,7 +503,8 @@ actions:
     user: root
 
   syncConfigs:
-    cmd [group]: |-
-      bitninjacli --syncconfigs
-      bitninjacli --module=System --reload || echo "WARN: System module reload failed" >&2
-    user: root
+    - cmd [group]: |-
+        bitninjacli --syncconfigs
+        bitninjacli --module=System --reload || echo "WARN: System module reload failed" >&2
+      user: root
+    - configureWAF3
