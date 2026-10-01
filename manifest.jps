@@ -380,7 +380,7 @@ actions:
 
   configureWAF3:
     - waitForBitNinjaAgent:
-        nodeid: ${this.nodeid:}
+        nodeid: ${this.nodeid:group}
     - cmd [${this.nodeid:group}]: |-
         [[ -d /etc/bitninja/WAF3 ]] || exit 0
         waf_enable_ok=0
