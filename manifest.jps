@@ -138,14 +138,12 @@ onAfterRedeployContainer[${targetNodes.nodeGroup}]:
           yum install -y initscripts libxcrypt-compat
       fi
       printf '%s\n' '[bitninja]' 'name=BitNinja Server Security (Stable)' 'baseurl=http://rpm.bitninja.io/$releasever/$basearch' 'gpgcheck=0' 'enabled=1' > /etc/yum.repos.d/bitninja.repo
-      if [ -f /var/lib/bitninja-reliable-auto-update/main.json ]; then
-          sed -i -E 's/"frequent"/"stable"/; s/"beta"/"stable"/' /var/lib/bitninja-reliable-auto-update/main.json
-      fi
       yum -y install bitninja
       for pkg in bitninja bitninja-waf3 bitninja-reliable-auto-update; do
           rpm -q "$pkg" >/dev/null 2>&1 && yum -y distro-sync "$pkg"
       done
       service bitninja restart
+      sed -i -E 's/"frequent"/"stable"/; s/"beta"/"stable"/' /var/lib/bitninja-reliable-auto-update/main.json
     user: root
   - disableIPForwarding
   - makeLogsVisible
