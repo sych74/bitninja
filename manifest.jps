@@ -133,17 +133,12 @@ onAfterClone:
     
 onAfterRedeployContainer[${targetNodes.nodeGroup}]:
   - cmd [${targetNodes.nodeGroup}]: |-
-      yum -y remove bitninja-repo; rm -f /etc/yum.repos.d/BitNinja.repo /etc/yum.repos.d/bitninja.repo
       if grep -q 'AlmaLinux' /etc/system-release; then
           yum install -y initscripts libxcrypt-compat
       fi
-      printf '%s\n' '[bitninja]' 'name=BitNinja Server Security (Stable)' 'baseurl=http://rpm.bitninja.io/$releasever/$basearch' 'gpgcheck=0' 'enabled=1' > /etc/yum.repos.d/bitninja.repo
-      yum -y install bitninja
-      for pkg in bitninja bitninja-waf3 bitninja-reliable-auto-update; do
-          rpm -q "$pkg" >/dev/null 2>&1 && yum -y distro-sync "$pkg"
-      done
+      yum -y remove bitninja-repo; rm -f /etc/yum.repos.d/BitNinja.repo /etc/yum.repos.d/bitninja.repo
+      curl https://get.bitninja.io/install.sh | /bin/bash -s - --updateChannel=stable -y
       service bitninja restart
-      sed -i -E 's/"frequent"/"stable"/; s/"beta"/"stable"/' /var/lib/bitninja-reliable-auto-update/main.json
     user: root
   - disableIPForwarding
   - makeLogsVisible
