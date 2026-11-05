@@ -137,7 +137,7 @@ onAfterRedeployContainer[${targetNodes.nodeGroup}]:
           yum install -y initscripts libxcrypt-compat
       fi
       yum -y remove bitninja-repo; rm -f /etc/yum.repos.d/BitNinja.repo /etc/yum.repos.d/bitninja.repo
-      curl https://get.bitninja.io/install.sh | /bin/bash -s - -y
+      curl https://get.bitninja.io/install.sh | /bin/bash -s - --updateChannel=stable -y
       service bitninja restart
     user: root
   - disableIPForwarding
@@ -287,7 +287,7 @@ actions:
   installAgent:
     cmd [${this.id}]: |-
       yum -y remove bitninja-repo; rm -f /etc/yum.repos.d/BitNinja.repo /etc/yum.repos.d/bitninja.repo
-      curl https://get.bitninja.io/install.sh | /bin/bash -s - --license_key='${this.licenseKey}' -y --serverConfigurationMetadata='{"label": "${targetNodes.nodeType}", "provider": "jelastic" }' --environmentSpecification='{"nodeGroup": "${targetNodes.nodeGroup}", "environmentName": "${env.name}", "environmentDomain": "${env.domain}" }'
+      curl https://get.bitninja.io/install.sh | /bin/bash -s - --license_key='${this.licenseKey}' --updateChannel=stable -y --serverConfigurationMetadata='{"label": "${targetNodes.nodeType}", "provider": "jelastic" }' --environmentSpecification='{"nodeGroup": "${targetNodes.nodeGroup}", "environmentName": "${env.name}", "environmentDomain": "${env.domain}" }'
       if [ -f /var/lib/bitninja-reliable-auto-update/main.json ]; then
           sed -i -E 's/"frequent"/"stable"/; s/"beta"/"stable"/' /var/lib/bitninja-reliable-auto-update/main.json
       fi
